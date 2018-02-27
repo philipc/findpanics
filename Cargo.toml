@@ -1,0 +1,14 @@
+[package]
+name = "findpanics"
+version = "0.1.0"
+authors = ["Philip Craig <philipjcraig@gmail.com>"]
+
+[dependencies]
+addr2line = "0.6"
+clap = "2"
+failure = "0.1"
+gimli = "0.15"
+memmap = "0.6"
+object = "0.7"
+panopticon-core = { git = "https://github.com/das-labor/panopticon" }
+panopticon-amd64 = { git = "https://github.com/das-labor/panopticon" }
