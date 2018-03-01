@@ -11,6 +11,8 @@ extern crate panopticon_core as panopticon;
 
 use std::collections::HashMap;
 use std::fs;
+use std::io::{self, BufRead};
+use std::path::PathBuf;
 
 use object::{Object, ObjectSegment};
 
@@ -78,6 +80,8 @@ fn parse_file(path: &str) -> Result<()> {
     for segment in object.segments() {
         disassembler.add_segment(segment.data(), segment.address());
     }
+
+    let mut source_lines = SourceLines::new();
 
     let mut panic_symbols = HashMap::new();
     for symbol in symbolizer
@@ -149,24 +153,23 @@ fn parse_file(path: &str) -> Result<()> {
                         } else {
                             print!("<unknown>");
                         }
-                        if let Some(location) = frame.location {
-                            print!(" (");
-                            if let Some(file) = location.file {
-                                print!("{}", file.to_string_lossy());
-                            } else {
-                                print!("??");
-                            }
-                            if let Some(line) = location.line {
-                                print!(":{}", line);
-                            } else {
-                                print!(":?");
-                            }
-                            if let Some(column) = location.column {
+                        if let Some(addr2line::Location {
+                            file: Some(ref file),
+                            line: Some(line),
+                            column,
+                        }) = frame.location
+                        {
+                            print!(" ({}:{}", file.to_string_lossy(), line);
+                            if let Some(column) = column {
                                 print!(":{}", column);
                             }
-                            print!(")");
+                            println!(")");
+                            if let Some(source) = source_lines.line(file, line as usize) {
+                                println!("            source: {}", source.trim());
+                            }
+                        } else {
+                            println!();
                         }
-                        println!();
                         first = false;
                     }
                 }
@@ -206,6 +209,41 @@ fn is_whitelist_symbol(name: Option<&str>) -> bool {
     } else {
         false
     }
+}
+
+struct SourceLines {
+    map: HashMap<PathBuf, Vec<String>>,
+}
+
+impl SourceLines {
+    fn new() -> Self {
+        SourceLines {
+            map: HashMap::new(),
+        }
+    }
+
+    fn line(&mut self, path: &PathBuf, mut line: usize) -> Option<&str> {
+        if line == 0 {
+            return None;
+        }
+        line -= 1;
+
+        self.map
+            .entry(path.clone())
+            .or_insert_with(|| read_lines(path).unwrap_or_default())
+            .get(line)
+            .map(|line| line.as_ref())
+    }
+}
+
+fn read_lines(path: &PathBuf) -> io::Result<Vec<String>> {
+    let f = fs::File::open(path)?;
+    let r = io::BufReader::new(f);
+    let mut lines = Vec::new();
+    for line in r.lines() {
+        lines.push(line?);
+    }
+    Ok(lines)
 }
 
 struct Symbolizer<'a> {
