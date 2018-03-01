@@ -2,6 +2,11 @@
 name = "findpanics"
 version = "0.1.0"
 authors = ["Philip Craig <philipjcraig@gmail.com>"]
+description = "Find calls to panic functions in rust executables"
+repository = "https://github.com/philipc/ddbug"
+readme = "README.md"
+categories = ["development-tools::debugging"]
+license = "Apache-2.0/MIT"
 
 [dependencies]
 addr2line = "0.6"
