@@ -80,25 +80,37 @@ fn parse_file(path: &str) -> Result<()> {
     }
 
     let mut panic_symbols = HashMap::new();
-    for symbol in symbolizer.symbols.symbols() {
+    for symbol in symbolizer
+        .symbols
+        .symbols()
+        .iter()
+        .filter(|s| is_panic_symbol(s))
+    {
         if let Some(name) = symbol.name() {
-            if name.starts_with("_ZN4core9panicking18panic_bounds_check17h")
-                || name.starts_with("_ZN4core9panicking5panic17h")
-                || name.starts_with("_ZN4core9panicking9panic_fmt17h")
-                || name.starts_with("_ZN4core6result13unwrap_failed17h")
-                || name.starts_with("_ZN3std9panicking11begin_panic17h")
-                || name.starts_with("_ZN3std9panicking15begin_panic_fmt17h")
-            {
-                panic_symbols.insert(
-                    symbol.address(),
-                    addr2line::demangle_auto(name.into(), None),
-                );
-            }
+            panic_symbols.insert(
+                symbol.address(),
+                addr2line::demangle_auto(name.into(), None),
+            );
         }
     }
 
+    let mut symbols: Vec<(&object::Symbol, _)> = symbolizer
+        .symbols
+        .symbols()
+        .iter()
+        .filter(|s| !is_panic_symbol(s))
+        .map(|s| {
+            (
+                s,
+                s.name()
+                    .map(|name| addr2line::demangle_auto(name.into(), None)),
+            )
+        })
+        .collect();
+    symbols.sort_by(|&(_, ref a), &(_, ref b)| a.cmp(b));
+
     let mut calls = Vec::new();
-    for symbol in symbolizer.symbols.symbols() {
+    for (symbol, symbol_name) in symbols {
         if symbol.kind() == object::SymbolKind::Text {
             calls.clear();
             let begin = symbol.address();
@@ -110,8 +122,8 @@ fn parse_file(path: &str) -> Result<()> {
             });
             if !calls.is_empty() {
                 print!("In function {:x} ", symbol.address());
-                if let Some(name) = symbol.name() {
-                    println!("{}", addr2line::demangle_auto(name.into(), None));
+                if let Some(name) = symbol_name {
+                    println!("{}", name);
                 } else {
                     println!("<unknown>");
                 }
@@ -164,6 +176,19 @@ fn parse_file(path: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn is_panic_symbol(symbol: &object::Symbol) -> bool {
+    if let Some(name) = symbol.name() {
+        name.starts_with("_ZN4core9panicking18panic_bounds_check17h")
+            || name.starts_with("_ZN4core9panicking5panic17h")
+            || name.starts_with("_ZN4core9panicking9panic_fmt17h")
+            || name.starts_with("_ZN4core6result13unwrap_failed17h")
+            || name.starts_with("_ZN3std9panicking11begin_panic17h")
+            || name.starts_with("_ZN3std9panicking15begin_panic_fmt17h")
+    } else {
+        false
+    }
 }
 
 struct Symbolizer<'a> {
