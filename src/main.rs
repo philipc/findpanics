@@ -40,7 +40,7 @@ impl<'a> From<&'a str> for Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
-const OPT_FILE: &'static str = "FILE";
+const OPT_FILE: &str = "FILE";
 
 fn main() {
     let matches = clap::App::new("findpanics")
@@ -98,80 +98,83 @@ fn parse_file(path: &str) -> Result<()> {
         .symbols
         .symbols()
         .iter()
-        .filter(|s| !is_panic_symbol(s))
-        .map(|s| {
-            (
-                s,
-                s.name()
-                    .map(|name| addr2line::demangle_auto(name.into(), None)),
-            )
+        .filter_map(|symbol| {
+            if symbol.kind() != object::SymbolKind::Text || is_panic_symbol(symbol) {
+                return None;
+            }
+            let name = symbol
+                .name()
+                .map(|name| addr2line::demangle_auto(name.into(), None));
+            if is_whitelist_symbol(name.as_ref().map(|n| n.as_ref())) {
+                return None;
+            }
+            Some((symbol, name))
         })
         .collect();
     symbols.sort_by(|&(_, ref a), &(_, ref b)| a.cmp(b));
 
     let mut calls = Vec::new();
     for (symbol, symbol_name) in symbols {
-        if symbol.kind() == object::SymbolKind::Text {
-            calls.clear();
-            let begin = symbol.address();
-            let end = begin + symbol.size();
-            disassembler.calls(begin, end, |from, to| {
-                if let Some(name) = panic_symbols.get(&to) {
-                    calls.push((from, to, name));
-                }
-            });
-            if !calls.is_empty() {
-                print!("In function {:x} ", symbol.address());
-                if let Some(name) = symbol_name {
-                    println!("{}", name);
-                } else {
-                    println!("<unknown>");
-                }
-                for &(from, to, name) in &calls {
-                    println!("    Call to {:x} {}", to, name);
-                    print!("         at {:x} ", from);
-                    let mut first = true;
-                    if let Some(mut frames) = symbolizer.find_frames(from) {
-                        while let Ok(Some(frame)) = frames.next() {
-                            if !first {
-                                print!("         inlined at ");
-                            }
-                            if let Some(function) = frame.function {
-                                if let Ok(name) = function.demangle() {
-                                    print!("{}", name);
-                                } else {
-                                    print!("<unknown>");
-                                }
+        calls.clear();
+        let begin = symbol.address();
+        let end = begin + symbol.size();
+        disassembler.calls(begin, end, |from, to| {
+            if let Some(name) = panic_symbols.get(&to) {
+                calls.push((from, to, name));
+            }
+        });
+        if !calls.is_empty() {
+            print!("In function {:x} ", symbol.address());
+            if let Some(name) = symbol_name {
+                println!("{}", name);
+            } else {
+                println!("<unknown>");
+            }
+            for &(from, to, name) in &calls {
+                println!();
+                println!("    Call to {:x} {}", to, name);
+                print!("         at {:x} ", from);
+                let mut first = true;
+                if let Some(mut frames) = symbolizer.find_frames(from) {
+                    while let Ok(Some(frame)) = frames.next() {
+                        if !first {
+                            print!("         inlined at ");
+                        }
+                        if let Some(function) = frame.function {
+                            if let Ok(name) = function.demangle() {
+                                print!("{}", name);
                             } else {
                                 print!("<unknown>");
                             }
-                            if let Some(location) = frame.location {
-                                print!(" (");
-                                if let Some(file) = location.file {
-                                    print!("{}", file.to_string_lossy());
-                                } else {
-                                    print!("??");
-                                }
-                                if let Some(line) = location.line {
-                                    print!(":{}", line);
-                                } else {
-                                    print!(":?");
-                                }
-                                if let Some(column) = location.column {
-                                    print!(":{}", column);
-                                }
-                                print!(")");
-                            }
-                            println!();
-                            first = false;
+                        } else {
+                            print!("<unknown>");
                         }
-                    }
-                    if first {
-                        print!("<unknown>");
+                        if let Some(location) = frame.location {
+                            print!(" (");
+                            if let Some(file) = location.file {
+                                print!("{}", file.to_string_lossy());
+                            } else {
+                                print!("??");
+                            }
+                            if let Some(line) = location.line {
+                                print!(":{}", line);
+                            } else {
+                                print!(":?");
+                            }
+                            if let Some(column) = location.column {
+                                print!(":{}", column);
+                            }
+                            print!(")");
+                        }
+                        println!();
+                        first = false;
                     }
                 }
-                println!();
+                if first {
+                    println!("<unknown>");
+                }
             }
+            println!();
         }
     }
 
@@ -191,6 +194,20 @@ fn is_panic_symbol(symbol: &object::Symbol) -> bool {
     }
 }
 
+fn is_whitelist_symbol(name: Option<&str>) -> bool {
+    if let Some(mut name) = name {
+        if name.starts_with('<') {
+            name = &name[1..];
+        }
+
+        name.starts_with("alloc::") || name.starts_with("core::") || name.starts_with("std::")
+            || name.starts_with("std_unicode::") || name == "rust_begin_unwind"
+            || name == "__rust_maybe_catch_panic"
+    } else {
+        false
+    }
+}
+
 struct Symbolizer<'a> {
     symbols: object::SymbolMap<'a>,
     dwarf: addr2line::Context<gimli::EndianBuf<'a, gimli::RunTimeEndian>>,
@@ -199,7 +216,7 @@ struct Symbolizer<'a> {
 impl<'a> Symbolizer<'a> {
     fn new(object: &object::File<'a>) -> Result<Self> {
         let symbols = object.symbol_map();
-        let dwarf = addr2line::Context::new(&object).map_err(|reason| Error::Dwarf { reason })?;
+        let dwarf = addr2line::Context::new(object).map_err(|reason| Error::Dwarf { reason })?;
         Ok(Symbolizer { symbols, dwarf })
     }
 
