@@ -12,11 +12,12 @@ cargo install --git https://github.com/philipc/findpanics
 ## Example output
 
 ```
-In function 44ab0 findpanics::main::h08f3b0eaa3fb2978
+In function 45800 findpanics::main::ha119f0252f22d91f
 
-    Call to 1bb730 core::panicking::panic::hdf4baf73e8b6719e
-         at 44d7d core::option::{{impl}}::unwrap<&str> (/checkout/src/libcore/macros.rs:20)
-         inlined at findpanics::main (/home/philipc/code/rust/findpanics/src/main.rs:57)
+    Call to 1bfe50 core::panicking::panic::hdf4baf73e8b6719e
+         at 45acd core::option::{{impl}}::unwrap<&str> (/checkout/src/libcore/macros.rs:20)
+         inlined at findpanics::main (src/main.rs:61)
+            source: let path = matches.value_of(OPT_FILE).unwrap();
 ```
 
 ## Copyright

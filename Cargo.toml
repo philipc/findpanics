@@ -13,6 +13,7 @@ addr2line = "0.6"
 clap = "2"
 failure = "0.1"
 gimli = "0.15"
+home = "0.3"
 memmap = "0.6"
 object = "0.7"
 panopticon-core = { git = "https://github.com/das-labor/panopticon" }

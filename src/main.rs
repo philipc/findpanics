@@ -4,12 +4,14 @@ extern crate clap;
 #[macro_use]
 extern crate failure;
 extern crate gimli;
+extern crate home;
 extern crate memmap;
 extern crate object;
 extern crate panopticon_amd64 as amd64;
 extern crate panopticon_core as panopticon;
 
 use std::collections::HashMap;
+use std::env;
 use std::fs;
 use std::io::{self, BufRead};
 use std::path::PathBuf;
@@ -57,12 +59,22 @@ fn main() {
         .get_matches();
 
     let path = matches.value_of(OPT_FILE).unwrap();
-    if let Err(e) = parse_file(path) {
+    if let Err(e) = process_file(path) {
         eprintln!("{}: {}", path, e);
     }
 }
 
-fn parse_file(path: &str) -> Result<()> {
+fn process_file(path: &str) -> Result<()> {
+    let cwd = match env::current_dir() {
+        Ok(dir) => dir,
+        Err(e) => return Err(format!("could not determine current dir: {}", e).into()),
+    };
+
+    let cargo_home = match home::cargo_home_with_cwd(&cwd) {
+        Ok(dir) => dir,
+        Err(e) => return Err(format!("could not determine cargo dir: {}", e).into()),
+    };
+
     let handle = match fs::File::open(path) {
         Ok(handle) => handle,
         Err(e) => return Err(format!("open failed: {}", e).into()),
@@ -109,7 +121,7 @@ fn parse_file(path: &str) -> Result<()> {
             let name = symbol
                 .name()
                 .map(|name| addr2line::demangle_auto(name.into(), None));
-            if is_whitelist_symbol(name.as_ref().map(|n| n.as_ref())) {
+            if is_std_symbol(name.as_ref().map(|n| n.as_ref())) {
                 return None;
             }
             Some((symbol, name))
@@ -159,7 +171,10 @@ fn parse_file(path: &str) -> Result<()> {
                             column,
                         }) = frame.location
                         {
-                            print!(" ({}:{}", file.to_string_lossy(), line);
+                            let rel_file = file.strip_prefix(&cwd)
+                                .or_else(|_| file.strip_prefix(&cargo_home))
+                                .unwrap_or(file);
+                            print!(" ({}:{}", rel_file.to_string_lossy(), line);
                             if let Some(column) = column {
                                 print!(":{}", column);
                             }
@@ -197,7 +212,7 @@ fn is_panic_symbol(symbol: &object::Symbol) -> bool {
     }
 }
 
-fn is_whitelist_symbol(name: Option<&str>) -> bool {
+fn is_std_symbol(name: Option<&str>) -> bool {
     if let Some(mut name) = name {
         if name.starts_with('<') {
             name = &name[1..];
