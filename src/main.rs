@@ -9,7 +9,12 @@ extern crate memmap;
 extern crate object;
 extern crate panopticon_amd64 as amd64;
 extern crate panopticon_core as panopticon;
+#[macro_use]
+extern crate serde_derive;
+extern crate serde_yaml;
 
+use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -65,25 +70,14 @@ fn main() {
 }
 
 fn process_file(path: &str) -> Result<()> {
-    let cwd = match env::current_dir() {
-        Ok(dir) => dir,
-        Err(e) => return Err(format!("could not determine current dir: {}", e).into()),
-    };
+    let cwd = env::current_dir()
+        .map_err(|e| Error::from(format!("could not determine current dir: {}", e)))?;
+    let cargo_home = home::cargo_home_with_cwd(&cwd)
+        .map_err(|e| Error::from(format!("could not determine cargo dir: {}", e)))?;
 
-    let cargo_home = match home::cargo_home_with_cwd(&cwd) {
-        Ok(dir) => dir,
-        Err(e) => return Err(format!("could not determine cargo dir: {}", e).into()),
-    };
-
-    let handle = match fs::File::open(path) {
-        Ok(handle) => handle,
-        Err(e) => return Err(format!("open failed: {}", e).into()),
-    };
-
-    let map = match unsafe { memmap::Mmap::map(&handle) } {
-        Ok(map) => map,
-        Err(e) => return Err(format!("memmap failed: {}", e).into()),
-    };
+    let handle = fs::File::open(path).map_err(|e| Error::from(format!("open failed: {}", e)))?;
+    let map = unsafe { memmap::Mmap::map(&handle) }
+        .map_err(|e| Error::from(format!("memmap failed: {}", e)))?;
 
     let object = object::File::parse(&*map).map_err(|reason| Error::Object { reason })?;
     let symbolizer = Symbolizer::new(&object)?;
@@ -93,7 +87,14 @@ fn process_file(path: &str) -> Result<()> {
         disassembler.add_segment(segment.data(), segment.address());
     }
 
-    let mut source_lines = SourceLines::new();
+    let mut config = match fs::File::open("findpanics.yaml") {
+        Ok(f) => serde_yaml::from_reader(f)
+            .map_err(|e| Error::from(format!("read findpanics.yaml failed: {}", e)))?,
+        Err(_) => Config::default(),
+    };
+    config.whitelist.sort();
+
+    let mut source_lines = SourceLines::default();
 
     let mut panic_symbols = HashMap::new();
     for symbol in symbolizer
@@ -136,7 +137,23 @@ fn process_file(path: &str) -> Result<()> {
         let end = begin + symbol.size();
         disassembler.calls(begin, end, |from, to| {
             if let Some(name) = panic_symbols.get(&to) {
-                calls.push((from, to, name));
+                let mut frames = Vec::new();
+                symbolizer.frames(from, |mut frame| {
+                    if let Some(ref path) = frame.path {
+                        frame.file = Some(
+                            path.strip_prefix(&cwd)
+                                .or_else(|_| path.strip_prefix(&cargo_home))
+                                .unwrap_or(&path)
+                                .to_string_lossy()
+                                .into_owned(),
+                        );
+                        frame.source = source_lines.line(path, frame.line).map(String::from);
+                    }
+                    frames.push(frame)
+                });
+                if !config.whitelist_matches(&frames, &name) {
+                    calls.push((from, to, name, frames));
+                }
             }
         });
         if !calls.is_empty() {
@@ -146,47 +163,33 @@ fn process_file(path: &str) -> Result<()> {
             } else {
                 println!("<unknown>");
             }
-            for &(from, to, name) in &calls {
+            for &(from, to, name, ref frames) in &calls {
                 println!();
                 println!("    Call to {:x} {}", to, name);
                 print!("         at {:x} ", from);
                 let mut first = true;
-                if let Some(mut frames) = symbolizer.find_frames(from) {
-                    while let Ok(Some(frame)) = frames.next() {
-                        if !first {
-                            print!("         inlined at ");
-                        }
-                        if let Some(function) = frame.function {
-                            if let Ok(name) = function.demangle() {
-                                print!("{}", name);
-                            } else {
-                                print!("<unknown>");
-                            }
-                        } else {
-                            print!("<unknown>");
-                        }
-                        if let Some(addr2line::Location {
-                            file: Some(ref file),
-                            line: Some(line),
-                            column,
-                        }) = frame.location
-                        {
-                            let rel_file = file.strip_prefix(&cwd)
-                                .or_else(|_| file.strip_prefix(&cargo_home))
-                                .unwrap_or(file);
-                            print!(" ({}:{}", rel_file.to_string_lossy(), line);
-                            if let Some(column) = column {
-                                print!(":{}", column);
-                            }
-                            println!(")");
-                            if let Some(source) = source_lines.line(file, line as usize) {
-                                println!("            source: {}", source.trim());
-                            }
-                        } else {
-                            println!();
-                        }
-                        first = false;
+                for frame in frames {
+                    if !first {
+                        print!("         inlined at ");
                     }
+                    if let Some(ref function) = frame.function {
+                        print!("{}", function);
+                    } else {
+                        print!("<unknown>");
+                    }
+                    if let Some(ref file) = frame.file {
+                        print!(" ({}:{}", file, frame.line);
+                        if frame.column != 0 {
+                            print!(":{}", frame.column);
+                        }
+                        println!(")");
+                    } else {
+                        println!();
+                    }
+                    if let Some(ref source) = frame.source {
+                        println!("            source: {}", source);
+                    }
+                    first = false;
                 }
                 if first {
                     println!("<unknown>");
@@ -226,17 +229,89 @@ fn is_std_symbol(name: Option<&str>) -> bool {
     }
 }
 
+struct Frame {
+    function: Option<String>,
+    path: Option<PathBuf>,
+    file: Option<String>,
+    line: usize,
+    column: usize,
+    source: Option<String>,
+}
+
+#[derive(Debug, Eq, Serialize, Deserialize)]
+struct WhiteListFrame {
+    from: String,
+    to: String,
+    // TODO: record if relative to cwd or cargo_home
+    file: String,
+    line: usize,
+    source: Option<String>,
+    comment: String,
+}
+
+impl Ord for WhiteListFrame {
+    fn cmp(&self, other: &WhiteListFrame) -> Ordering {
+        self.from
+            .cmp(&other.from)
+            .then_with(|| self.to.cmp(&other.to))
+            .then_with(|| self.file.cmp(&other.file))
+            .then_with(|| self.line.cmp(&other.line))
+            .then_with(|| self.source.cmp(&other.source))
+    }
+}
+
+impl PartialOrd for WhiteListFrame {
+    fn partial_cmp(&self, other: &WhiteListFrame) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for WhiteListFrame {
+    fn eq(&self, other: &WhiteListFrame) -> bool {
+        self.from == other.from && self.to == other.to && self.file == other.file
+            && self.line == other.line && self.source == other.source
+    }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct Config {
+    whitelist: Vec<WhiteListFrame>,
+}
+
+impl Config {
+    fn whitelist_matches(&self, frames: &[Frame], to: &str) -> bool {
+        let mut to = Some(to);
+        for frame in frames {
+            if let (Some(from), Some(to), Some(file)) =
+                (frame.function.as_ref(), to.as_ref(), frame.file.as_ref())
+            {
+                if self.whitelist
+                    .binary_search_by(|whitelist| {
+                        whitelist
+                            .from
+                            .cmp(&from)
+                            .then_with(|| whitelist.to.as_str().cmp(to))
+                            .then_with(|| whitelist.file.cmp(file))
+                            .then_with(|| whitelist.line.cmp(&frame.line))
+                            .then_with(|| whitelist.source.cmp(&frame.source))
+                    })
+                    .is_ok()
+                {
+                    return true;
+                }
+            }
+            to = frame.function.as_ref().map(String::as_str);
+        }
+        false
+    }
+}
+
+#[derive(Default)]
 struct SourceLines {
     map: HashMap<PathBuf, Vec<String>>,
 }
 
 impl SourceLines {
-    fn new() -> Self {
-        SourceLines {
-            map: HashMap::new(),
-        }
-    }
-
     fn line(&mut self, path: &PathBuf, mut line: usize) -> Option<&str> {
         if line == 0 {
             return None;
@@ -256,7 +331,7 @@ fn read_lines(path: &PathBuf) -> io::Result<Vec<String>> {
     let r = io::BufReader::new(f);
     let mut lines = Vec::new();
     for line in r.lines() {
-        lines.push(line?);
+        lines.push(String::from(line?.trim()));
     }
     Ok(lines)
 }
@@ -273,11 +348,46 @@ impl<'a> Symbolizer<'a> {
         Ok(Symbolizer { symbols, dwarf })
     }
 
-    fn find_frames(
-        &self,
-        address: u64,
-    ) -> Option<addr2line::FrameIter<gimli::EndianBuf<'a, gimli::RunTimeEndian>>> {
-        self.dwarf.find_frames(address).ok()
+    fn frames<F>(&self, address: u64, mut f: F)
+    where
+        F: FnMut(Frame),
+    {
+        if let Ok(mut frames) = self.dwarf.find_frames(address) {
+            while let Ok(Some(frame)) = frames.next() {
+                let function = frame
+                    .function
+                    .as_ref()
+                    .and_then(|function| function.demangle().ok())
+                    .map(Cow::into_owned);
+                // Require both file and line.
+                if let Some(addr2line::Location {
+                    file: Some(path),
+                    line: Some(line),
+                    column,
+                }) = frame.location
+                {
+                    let line = line as usize;
+                    let column = column.unwrap_or(0) as usize;
+                    f(Frame {
+                        function,
+                        path: Some(path),
+                        file: None,
+                        line,
+                        column,
+                        source: None,
+                    });
+                } else {
+                    f(Frame {
+                        function,
+                        path: None,
+                        file: None,
+                        line: 0,
+                        column: 0,
+                        source: None,
+                    });
+                }
+            }
+        }
     }
 }
 

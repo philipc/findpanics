@@ -3,7 +3,7 @@ name = "findpanics"
 version = "0.1.0"
 authors = ["Philip Craig <philipjcraig@gmail.com>"]
 description = "Find calls to panic functions in rust executables"
-repository = "https://github.com/philipc/ddbug"
+repository = "https://github.com/philipc/findpanics"
 readme = "README.md"
 categories = ["development-tools::debugging"]
 license = "Apache-2.0/MIT"
@@ -18,3 +18,6 @@ memmap = "0.6"
 object = "0.7"
 panopticon-core = { git = "https://github.com/das-labor/panopticon" }
 panopticon-amd64 = { git = "https://github.com/das-labor/panopticon" }
+serde = "1.0"
+serde_derive = "1.0"
+serde_yaml = "0.7"

@@ -9,6 +9,15 @@ After installing [Rust](https://www.rust-lang.org/), run:
 cargo install --git https://github.com/philipc/findpanics
 ```
 
+## Running
+
+Usage: `findpanics <FILE>`
+
+The current directory must be the top level of a crate.
+
+A whitelist of allowed panics is read from `findpanics.yaml` in the current directory.
+Currently this whitelist must be created manually.
+
 ## Example output
 
 ```
@@ -22,7 +31,7 @@ In function 45800 findpanics::main::ha119f0252f22d91f
 
 ## Copyright
 
-Copyright 2018 The ddbug developers
+Copyright 2018 The findpanics developers
 
 This software is licensed under either of
 
