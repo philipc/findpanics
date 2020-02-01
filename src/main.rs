@@ -221,8 +221,11 @@ fn is_std_symbol(name: Option<&str>) -> bool {
             name = &name[1..];
         }
 
-        name.starts_with("alloc::") || name.starts_with("core::") || name.starts_with("std::")
-            || name.starts_with("std_unicode::") || name == "rust_begin_unwind"
+        name.starts_with("alloc::")
+            || name.starts_with("core::")
+            || name.starts_with("std::")
+            || name.starts_with("std_unicode::")
+            || name == "rust_begin_unwind"
             || name == "__rust_maybe_catch_panic"
     } else {
         false
@@ -268,8 +271,11 @@ impl PartialOrd for WhiteListFrame {
 
 impl PartialEq for WhiteListFrame {
     fn eq(&self, other: &WhiteListFrame) -> bool {
-        self.from == other.from && self.to == other.to && self.file == other.file
-            && self.line == other.line && self.source == other.source
+        self.from == other.from
+            && self.to == other.to
+            && self.file == other.file
+            && self.line == other.line
+            && self.source == other.source
     }
 }
 
@@ -285,7 +291,8 @@ impl Config {
             if let (Some(from), Some(to), Some(file)) =
                 (frame.function.as_ref(), to.as_ref(), frame.file.as_ref())
             {
-                if self.whitelist
+                if self
+                    .whitelist
                     .binary_search_by(|whitelist| {
                         whitelist
                             .from
