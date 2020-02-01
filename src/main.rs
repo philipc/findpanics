@@ -92,6 +92,7 @@ fn process_file(path: &str) -> Result<()> {
             .map_err(|e| Error::from(format!("read findpanics.yaml failed: {}", e)))?,
         Err(_) => Config::default(),
     };
+    // TODO: validate whitelist source matches source obtained from `source_lines`
     config.whitelist.sort();
 
     let mut source_lines = SourceLines::default();
@@ -147,7 +148,6 @@ fn process_file(path: &str) -> Result<()> {
                                 .to_string_lossy()
                                 .into_owned(),
                         );
-                        frame.source = source_lines.line(path, frame.line).map(String::from);
                     }
                     frames.push(frame)
                 });
@@ -186,7 +186,7 @@ fn process_file(path: &str) -> Result<()> {
                     } else {
                         println!();
                     }
-                    if let Some(ref source) = frame.source {
+                    if let Some(source) = frame.path.as_ref().and_then(|path| source_lines.line(path, frame.line)) {
                         println!("            source: {}", source);
                     }
                     first = false;
@@ -238,7 +238,6 @@ struct Frame {
     file: Option<String>,
     line: usize,
     column: usize,
-    source: Option<String>,
 }
 
 #[derive(Debug, Eq, Serialize, Deserialize)]
@@ -300,7 +299,6 @@ impl Config {
                             .then_with(|| whitelist.to.as_str().cmp(to))
                             .then_with(|| whitelist.file.cmp(file))
                             .then_with(|| whitelist.line.cmp(&frame.line))
-                            .then_with(|| whitelist.source.cmp(&frame.source))
                     })
                     .is_ok()
                 {
@@ -381,7 +379,6 @@ impl<'a> Symbolizer<'a> {
                         file: None,
                         line,
                         column,
-                        source: None,
                     });
                 } else {
                     f(Frame {
@@ -390,7 +387,6 @@ impl<'a> Symbolizer<'a> {
                         file: None,
                         line: 0,
                         column: 0,
-                        source: None,
                     });
                 }
             }
