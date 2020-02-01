@@ -186,7 +186,11 @@ fn process_file(path: &str) -> Result<()> {
                     } else {
                         println!();
                     }
-                    if let Some(source) = frame.path.as_ref().and_then(|path| source_lines.line(path, frame.line)) {
+                    if let Some(source) = frame
+                        .path
+                        .as_ref()
+                        .and_then(|path| source_lines.line(path, frame.line))
+                    {
                         println!("            source: {}", source);
                     }
                     first = false;
@@ -343,7 +347,7 @@ fn read_lines(path: &PathBuf) -> io::Result<Vec<String>> {
 
 struct Symbolizer<'a> {
     symbols: object::SymbolMap<'a>,
-    dwarf: addr2line::Context<gimli::EndianBuf<'a, gimli::RunTimeEndian>>,
+    dwarf: addr2line::ObjectContext,
 }
 
 impl<'a> Symbolizer<'a> {
@@ -375,7 +379,7 @@ impl<'a> Symbolizer<'a> {
                     let column = column.unwrap_or(0) as usize;
                     f(Frame {
                         function,
-                        path: Some(path),
+                        path: Some(path.into()),
                         file: None,
                         line,
                         column,
@@ -401,8 +405,8 @@ struct Disassembler {
 
 impl Disassembler {
     fn new(object: &object::File) -> Result<Self> {
-        let (machine, region) = match object.machine() {
-            object::Machine::X86_64 => {
+        let (machine, region) = match object.architecture() {
+            object::target_lexicon::Architecture::X86_64 => {
                 let region =
                     panopticon::Region::undefined("RAM".to_string(), 0xFFFF_FFFF_FFFF_FFFF);
                 (panopticon::Machine::Amd64, region)
