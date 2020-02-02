@@ -1,17 +1,17 @@
-extern crate addr2line;
+use addr2line;
 #[macro_use]
 extern crate clap;
 #[macro_use]
 extern crate failure;
-extern crate gimli;
-extern crate home;
-extern crate memmap;
-extern crate object;
+use gimli;
+use home;
+use memmap;
+use object;
 extern crate panopticon_amd64 as amd64;
 extern crate panopticon_core as panopticon;
 #[macro_use]
 extern crate serde_derive;
-extern crate serde_yaml;
+use serde_yaml;
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -112,7 +112,7 @@ fn process_file(path: &str) -> Result<()> {
         }
     }
 
-    let mut symbols: Vec<(&object::Symbol, _)> = symbolizer
+    let mut symbols: Vec<(&object::Symbol<'_>, _)> = symbolizer
         .symbols
         .symbols()
         .iter()
@@ -206,7 +206,7 @@ fn process_file(path: &str) -> Result<()> {
     Ok(())
 }
 
-fn is_panic_symbol(symbol: &object::Symbol) -> bool {
+fn is_panic_symbol(symbol: &object::Symbol<'_>) -> bool {
     if let Some(name) = symbol.name() {
         name.starts_with("_ZN4core9panicking18panic_bounds_check17h")
             || name.starts_with("_ZN4core9panicking5panic17h")
@@ -404,7 +404,7 @@ struct Disassembler {
 }
 
 impl Disassembler {
-    fn new(object: &object::File) -> Result<Self> {
+    fn new(object: &object::File<'_>) -> Result<Self> {
         let (machine, region) = match object.architecture() {
             object::target_lexicon::Architecture::X86_64 => {
                 let region =
