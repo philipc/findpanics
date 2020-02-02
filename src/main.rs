@@ -6,9 +6,7 @@ extern crate failure;
 use gimli;
 use home;
 use memmap;
-use object;
-extern crate panopticon_amd64 as amd64;
-extern crate panopticon_core as panopticon;
+use object::{self, Object};
 #[macro_use]
 extern crate serde_derive;
 use serde_yaml;
@@ -21,7 +19,7 @@ use std::fs;
 use std::io::{self, BufRead};
 use std::path::PathBuf;
 
-use object::{Object, ObjectSegment};
+mod code;
 
 #[derive(Debug, Fail)]
 enum Error {
@@ -81,11 +79,7 @@ fn process_file(path: &str) -> Result<()> {
 
     let object = object::File::parse(&*map).map_err(|reason| Error::Object { reason })?;
     let symbolizer = Symbolizer::new(&object)?;
-
-    let mut disassembler = Disassembler::new(&object)?;
-    for segment in object.segments() {
-        disassembler.add_segment(segment.data(), segment.address());
-    }
+    let disassembler = code::Code::new(&object).ok_or(Error::from("unsupported architecture"))?;
 
     let mut config = match fs::File::open("findpanics.yaml") {
         Ok(f) => serde_yaml::from_reader(f)
@@ -393,80 +387,6 @@ impl<'a> Symbolizer<'a> {
                         column: 0,
                     });
                 }
-            }
-        }
-    }
-}
-
-struct Disassembler {
-    machine: panopticon::Machine,
-    region: panopticon::Region,
-}
-
-impl Disassembler {
-    fn new(object: &object::File<'_>) -> Result<Self> {
-        let (machine, region) = match object.architecture() {
-            object::target_lexicon::Architecture::X86_64 => {
-                let region =
-                    panopticon::Region::undefined("RAM".to_string(), 0xFFFF_FFFF_FFFF_FFFF);
-                (panopticon::Machine::Amd64, region)
-            }
-            _ => return Err("unsupported machine".into()),
-        };
-
-        Ok(Disassembler { machine, region })
-    }
-
-    fn add_segment(&mut self, data: &[u8], begin: u64) {
-        let end = begin + data.len() as u64;
-        let bound = panopticon::Bound::new(begin, end);
-        let layer = panopticon::Layer::wrap(data.to_vec());
-        self.region.cover(bound, layer);
-    }
-
-    fn calls<F>(&self, begin: u64, end: u64, f: F)
-    where
-        F: FnMut(u64, u64),
-    {
-        match self.machine {
-            panopticon::Machine::Amd64 => {
-                self.calls_arch::<amd64::Amd64, _>(amd64::Mode::Long, begin, end, f);
-            }
-            _ => {}
-        }
-    }
-
-    fn calls_arch<A, F>(&self, cfg: A::Configuration, begin: u64, end: u64, mut f: F)
-    where
-        A: panopticon::Architecture,
-        F: FnMut(u64, u64),
-    {
-        let mut address = begin;
-        while address < end {
-            let m = match A::decode(&self.region, address, &cfg) {
-                Ok(m) => m,
-                Err(e) => {
-                    eprintln!("failed to disassemble: {}", e);
-                    return;
-                }
-            };
-
-            for mnemonic in m.mnemonics {
-                for instruction in &mnemonic.instructions {
-                    match *instruction {
-                        panopticon::Statement {
-                            op: panopticon::Operation::Call(ref call),
-                            ..
-                        } => match *call {
-                            panopticon::Rvalue::Constant { ref value, .. } => {
-                                f(mnemonic.area.start, *value);
-                            }
-                            _ => {}
-                        },
-                        _ => {}
-                    }
-                }
-                address = mnemonic.area.end;
             }
         }
     }

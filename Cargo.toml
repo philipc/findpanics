@@ -17,8 +17,8 @@ gimli = "0.20"
 home = "0.5"
 memmap = "0.7"
 object = "0.17"
-panopticon-amd64 = { git = "https://github.com/das-labor/panopticon" }
-panopticon-core = { git = "https://github.com/das-labor/panopticon" }
+capstone = { git = "https://github.com/capstone-rust/capstone-rs.git", rev = "5044ace8022b1651d1b7c93d41ad56993e0225f5" }
+capstone-sys = { git = "https://github.com/capstone-rust/capstone-rs.git", rev = "5044ace8022b1651d1b7c93d41ad56993e0225f5" }
 serde = "1.0"
 serde_derive = "1.0"
 serde_yaml = "0.8"
