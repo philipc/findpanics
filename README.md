@@ -3,6 +3,9 @@
 Use disassembly and DWARF debugging information to find calls to panic functions.
 Currently only tested on Linux.
 
+This tool is intended for auditing specific aspects of an executable. You will never avoid
+most panics in rust code, but avoiding panics in specific locations may be possible.
+
 ## Installing
 After installing [Rust](https://www.rust-lang.org/), run:
 ```

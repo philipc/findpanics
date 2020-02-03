@@ -49,6 +49,7 @@ type Result<T> = std::result::Result<T, Error>;
 
 const OPT_FILE: &str = "FILE";
 const OPT_TERSE: &str = "t";
+const OPT_ALL: &str = "a";
 
 fn main() {
     let matches = clap::App::new("findpanics")
@@ -61,6 +62,11 @@ fn main() {
                 .index(1),
         )
         .arg(
+            clap::Arg::with_name(OPT_ALL)
+                .short("a")
+                .help("Show all, including libstd"),
+        )
+        .arg(
             clap::Arg::with_name(OPT_TERSE)
                 .short("t")
                 .help("Terser output for diffing (no addresses or paths)"),
@@ -68,13 +74,14 @@ fn main() {
         .get_matches();
 
     let path = matches.value_of(OPT_FILE).unwrap();
+    let all = matches.is_present(OPT_ALL);
     let terse = matches.is_present(OPT_TERSE);
-    if let Err(e) = process_file(path, terse) {
+    if let Err(e) = process_file(path, all, terse) {
         eprintln!("{}: {}", path, e);
     }
 }
 
-fn process_file(path: &str, terse: bool) -> Result<()> {
+fn process_file(path: &str, all: bool, terse: bool) -> Result<()> {
     let cwd = env::current_dir()
         .map_err(|e| Error::from(format!("could not determine current dir: {}", e)))?;
     let cargo_home = home::cargo_home_with_cwd(&cwd)
@@ -109,7 +116,7 @@ fn process_file(path: &str, terse: bool) -> Result<()> {
             let name = symbol.name().expect("symbols must have names");
             let name = addr2line::demangle_auto(name.into(), None);
             let std = is_std_symbol(&name);
-            let whitelist = std && is_whitelist_symbol(&name);
+            let whitelist = is_whitelist_symbol(&name, std);
             Some(Symbol {
                 name,
                 std,
@@ -182,14 +189,17 @@ fn process_file(path: &str, terse: bool) -> Result<()> {
     // Finally, determine which user symbols can directly panic.
     let mut calls = Vec::new();
     for symbol in &symbols {
-        if symbol.std {
+        if !all && symbol.std {
+            continue;
+        }
+        if symbol.whitelist {
             continue;
         }
 
         calls.clear();
         for &(from, to) in &symbol.succ {
             let to = &symbols[to];
-            if to.whitelist || !to.panic || !to.std {
+            if !to.panic || !to.std {
                 continue;
             }
             let mut frames = Vec::new();
@@ -288,20 +298,25 @@ fn is_std_symbol(mut name: &str) -> bool {
         || name.starts_with("__rust_")
         || name.starts_with("str as core::")
         || name.starts_with("char as core::")
+        || name.starts_with("&T as core::")
         || name == "rust_begin_unwind"
         || name == "rust_oom"
         || name == "rust_panic"
 }
 
-// std functions for which panics are not interesting.
-fn is_whitelist_symbol(name: &str) -> bool {
-    false
+// functions for which panics are not interesting.
+fn is_whitelist_symbol(name: &str, std: bool) -> bool {
+    // std-only whitelist
+    std && (false
+        || name == "alloc::fmt::format"
         || name == "core::fmt::write"
         || name == "std::io::Write::write_all"
         || name == "core::ptr::real_drop_in_place"
         || name == "alloc::raw_vec::capacity_overflow"
         || name == "std::rt::lang_start_internal"
-        || name.ends_with("::fmt")
+        || name.ends_with("::fmt"))
+        // std+user whitelist
+        || name.ends_with(" as core::fmt::Debug>::fmt")
 }
 
 struct Frame {
