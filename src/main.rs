@@ -14,10 +14,10 @@ use serde_yaml;
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::env;
-use std::fs;
 use std::io::{self, BufRead};
+use std::iter::FromIterator;
 use std::path::PathBuf;
+use std::{env, fs, mem};
 
 mod code;
 
@@ -87,6 +87,7 @@ fn process_file(path: &str, terse: bool) -> Result<()> {
     let object = object::File::parse(&*map).map_err(|reason| Error::Object { reason })?;
     let symbolizer = Symbolizer::new(&object)?;
     let disassembler = code::Code::new(&object).ok_or(Error::from("unsupported architecture"))?;
+    let mut source_lines = SourceLines::default();
 
     let mut config = match fs::File::open("findpanics.yaml") {
         Ok(f) => serde_yaml::from_reader(f)
@@ -96,85 +97,133 @@ fn process_file(path: &str, terse: bool) -> Result<()> {
     // TODO: validate whitelist source matches source obtained from `source_lines`
     config.whitelist.sort();
 
-    let mut source_lines = SourceLines::default();
-
-    let mut panic_symbols = HashMap::new();
-    for symbol in symbolizer
-        .symbols
-        .symbols()
-        .iter()
-        .filter(|s| is_panic_symbol(s))
-    {
-        if let Some(name) = symbol.name() {
-            panic_symbols.insert(
-                symbol.address(),
-                addr2line::demangle_auto(name.into(), None),
-            );
-        }
-    }
-
-    let mut symbols: Vec<(&object::Symbol<'_>, _)> = symbolizer
+    // Build list of symbols.
+    let mut symbols: Vec<Symbol> = symbolizer
         .symbols
         .symbols()
         .iter()
         .filter_map(|symbol| {
-            if symbol.kind() != object::SymbolKind::Text || is_panic_symbol(symbol) {
+            if symbol.kind() != object::SymbolKind::Text {
                 return None;
             }
-            let name = symbol
-                .name()
-                .map(|name| addr2line::demangle_auto(name.into(), None));
-            if is_std_symbol(name.as_ref().map(|n| n.as_ref())) {
-                return None;
-            }
-            Some((symbol, name))
+            let name = symbol.name().expect("symbols must have names");
+            let name = addr2line::demangle_auto(name.into(), None);
+            let std = is_std_symbol(&name);
+            let whitelist = std && is_whitelist_symbol(&name);
+            Some(Symbol {
+                name,
+                std,
+                whitelist,
+                panic: false,
+                address: symbol.address(),
+                size: symbol.size(),
+                succ: Vec::new(),
+                pred: Vec::new(),
+            })
         })
         .collect();
-    symbols.sort_by(|&(_, ref a), &(_, ref b)| a.cmp(b));
+    symbols.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let mut calls = Vec::new();
-    for (symbol, symbol_name) in symbols {
-        calls.clear();
-        let begin = symbol.address();
-        let end = begin + symbol.size();
+    // Map from address to symbol index.
+    // We assume calls are always to the start of a symbol.
+    let symbol_map: HashMap<u64, usize> =
+        HashMap::from_iter(symbols.iter().enumerate().map(|(i, s)| (s.address, i)));
+
+    // Build lists of succ/pred.
+    for i in 0..symbols.len() {
+        let begin = symbols[i].address;
+        let end = begin + symbols[i].size;
+        let mut succ = Vec::new();
         disassembler.calls(begin, end, |from, to| {
-            if let Some(name) = panic_symbols.get(&to) {
-                let mut frames = Vec::new();
-                symbolizer.frames(from, |mut frame| {
-                    if let Some(ref path) = frame.path {
-                        frame.file = Some(
-                            path.strip_prefix(&cwd)
-                                .or_else(|_| path.strip_prefix(&cargo_home))
-                                .unwrap_or(&path)
-                                .to_string_lossy()
-                                .into_owned(),
-                        );
-                    }
-                    frames.push(frame)
-                });
-                if !config.whitelist_matches(&frames, &name) {
-                    calls.push((from, to, name, frames));
-                }
+            if let Some(&to) = symbol_map.get(&to) {
+                succ.push((from, to));
+                symbols[to].pred.push(i);
             }
         });
+        symbols[i].succ = succ;
+    }
+
+    /*
+    // Check that std symbols aren't calling user symbols.
+    // Commented out because it picks up things in crates used by std (e.g. backtrace).
+    for symbol in &symbols {
+        if symbol.std {
+            for succ in &symbol.succ {
+                let succ = &symbols[succ.1];
+                if !succ.std {
+                    println!("{} should be std (called by {})", succ.name, symbol.name);
+                }
+            }
+        }
+    }
+    */
+
+    // Determine which std symbols can panic.
+    let mut todo = Vec::new();
+    for (i, symbol) in symbols.iter().enumerate() {
+        if is_panic_symbol(&symbol.name) {
+            todo.push(i);
+        }
+    }
+    let mut current = Vec::new();
+    while !todo.is_empty() {
+        mem::swap(&mut current, &mut todo);
+        for symbol in current.drain(..) {
+            let symbol = &mut symbols[symbol];
+            if !symbol.panic && !symbol.whitelist {
+                symbol.panic = true;
+                if symbol.std {
+                    todo.extend_from_slice(&symbol.pred);
+                }
+            }
+        }
+    }
+
+    // Finally, determine which user symbols can directly panic.
+    let mut calls = Vec::new();
+    for symbol in &symbols {
+        if symbol.std {
+            continue;
+        }
+
+        calls.clear();
+        for &(from, to) in &symbol.succ {
+            let to = &symbols[to];
+            if to.whitelist || !to.panic || !to.std {
+                continue;
+            }
+            let mut frames = Vec::new();
+            symbolizer.frames(from, |mut frame| {
+                if let Some(ref path) = frame.path {
+                    frame.file = Some(
+                        path.strip_prefix(&cwd)
+                            .or_else(|_| path.strip_prefix(&cargo_home))
+                            .unwrap_or(&path)
+                            .to_string_lossy()
+                            .into_owned(),
+                    );
+                }
+                frames.push(frame)
+            });
+            if !config.whitelist_matches(&frames, &to.name) {
+                calls.push((from, to, frames));
+            }
+        }
+
         if !calls.is_empty() {
             print!("In function ");
             if !terse {
-                print!("{:x} ", symbol.address());
+                print!("{:x} ", symbol.address);
             }
-            if let Some(name) = symbol_name {
-                println!("{}", name);
-            } else {
-                println!("<unknown>");
-            }
-            for &(from, to, name, ref frames) in &calls {
+            println!("{}", symbol.name);
+            for &(from, to, ref frames) in &calls {
                 println!();
 
                 print!("    Call to ");
                 if !terse {
-                    print!("{:x} ", to);
+                    print!("{:x} ", to.address);
                 }
-                println!("{}", name);
+                println!("{}", to.name);
 
                 print!("         at ");
                 if !terse {
@@ -220,34 +269,39 @@ fn process_file(path: &str, terse: bool) -> Result<()> {
     Ok(())
 }
 
-fn is_panic_symbol(symbol: &object::Symbol<'_>) -> bool {
-    if let Some(name) = symbol.name() {
-        name.starts_with("_ZN4core9panicking18panic_bounds_check17h")
-            || name.starts_with("_ZN4core9panicking5panic17h")
-            || name.starts_with("_ZN4core9panicking9panic_fmt17h")
-            || name.starts_with("_ZN4core6result13unwrap_failed17h")
-            || name.starts_with("_ZN3std9panicking11begin_panic17h")
-            || name.starts_with("_ZN3std9panicking15begin_panic_fmt17h")
-    } else {
-        false
-    }
+fn is_panic_symbol(name: &str) -> bool {
+    // TODO: how do we know this is enough?
+    name == "core::panicking::panic"
 }
 
-fn is_std_symbol(name: Option<&str>) -> bool {
-    if let Some(mut name) = name {
-        if name.starts_with('<') {
-            name = &name[1..];
-        }
-
-        name.starts_with("alloc::")
-            || name.starts_with("core::")
-            || name.starts_with("std::")
-            || name.starts_with("std_unicode::")
-            || name == "rust_begin_unwind"
-            || name == "__rust_maybe_catch_panic"
-    } else {
-        false
+fn is_std_symbol(mut name: &str) -> bool {
+    if name.starts_with('<') {
+        name = &name[1..];
     }
+
+    false
+        || name.starts_with("alloc::")
+        || name.starts_with("core::")
+        || name.starts_with("std::")
+        || name.starts_with("std_unicode::")
+        || name.starts_with("rustc_demangle::")
+        || name.starts_with("__rust_")
+        || name.starts_with("str as core::")
+        || name.starts_with("char as core::")
+        || name == "rust_begin_unwind"
+        || name == "rust_oom"
+        || name == "rust_panic"
+}
+
+// std functions for which panics are not interesting.
+fn is_whitelist_symbol(name: &str) -> bool {
+    false
+        || name == "core::fmt::write"
+        || name == "std::io::Write::write_all"
+        || name == "core::ptr::real_drop_in_place"
+        || name == "alloc::raw_vec::capacity_overflow"
+        || name == "std::rt::lang_start_internal"
+        || name.ends_with("::fmt")
 }
 
 struct Frame {
@@ -410,4 +464,16 @@ impl<'a> Symbolizer<'a> {
             }
         }
     }
+}
+
+#[derive(Debug)]
+struct Symbol<'a> {
+    name: Cow<'a, str>,
+    std: bool,
+    whitelist: bool,
+    panic: bool,
+    address: u64,
+    size: u64,
+    pred: Vec<usize>,
+    succ: Vec<(u64, usize)>,
 }
