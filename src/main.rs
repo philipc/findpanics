@@ -48,6 +48,7 @@ impl<'a> From<&'a str> for Error {
 type Result<T> = std::result::Result<T, Error>;
 
 const OPT_FILE: &str = "FILE";
+const OPT_TERSE: &str = "t";
 
 fn main() {
     let matches = clap::App::new("findpanics")
@@ -59,15 +60,21 @@ fn main() {
                 .required(true)
                 .index(1),
         )
+        .arg(
+            clap::Arg::with_name(OPT_TERSE)
+                .short("t")
+                .help("Terser output for diffing (no addresses or paths)"),
+        )
         .get_matches();
 
     let path = matches.value_of(OPT_FILE).unwrap();
-    if let Err(e) = process_file(path) {
+    let terse = matches.is_present(OPT_TERSE);
+    if let Err(e) = process_file(path, terse) {
         eprintln!("{}: {}", path, e);
     }
 }
 
-fn process_file(path: &str) -> Result<()> {
+fn process_file(path: &str, terse: bool) -> Result<()> {
     let cwd = env::current_dir()
         .map_err(|e| Error::from(format!("could not determine current dir: {}", e)))?;
     let cargo_home = home::cargo_home_with_cwd(&cwd)
@@ -151,7 +158,10 @@ fn process_file(path: &str) -> Result<()> {
             }
         });
         if !calls.is_empty() {
-            print!("In function {:x} ", symbol.address());
+            print!("In function ");
+            if !terse {
+                print!("{:x} ", symbol.address());
+            }
             if let Some(name) = symbol_name {
                 println!("{}", name);
             } else {
@@ -159,8 +169,17 @@ fn process_file(path: &str) -> Result<()> {
             }
             for &(from, to, name, ref frames) in &calls {
                 println!();
-                println!("    Call to {:x} {}", to, name);
-                print!("         at {:x} ", from);
+
+                print!("    Call to ");
+                if !terse {
+                    print!("{:x} ", to);
+                }
+                println!("{}", name);
+
+                print!("         at ");
+                if !terse {
+                    print!("{:x} ", from);
+                }
                 let mut first = true;
                 for frame in frames {
                     if !first {
@@ -171,15 +190,16 @@ fn process_file(path: &str) -> Result<()> {
                     } else {
                         print!("<unknown>");
                     }
-                    if let Some(ref file) = frame.file {
-                        print!(" ({}:{}", file, frame.line);
-                        if frame.column != 0 {
-                            print!(":{}", frame.column);
+                    if !terse {
+                        if let Some(ref file) = frame.file {
+                            print!(" ({}:{}", file, frame.line);
+                            if frame.column != 0 {
+                                print!(":{}", frame.column);
+                            }
+                            print!(")");
                         }
-                        println!(")");
-                    } else {
-                        println!();
                     }
+                    println!();
                     if let Some(source) = frame
                         .path
                         .as_ref()
