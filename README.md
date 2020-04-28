@@ -32,9 +32,7 @@ In function 45800 findpanics::main::ha119f0252f22d91f
             source: let path = matches.value_of(OPT_FILE).unwrap();
 ```
 
-## Copyright
-
-Copyright 2018 The findpanics developers
+## License
 
 This software is licensed under either of
 
@@ -46,8 +44,3 @@ at your option.
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
 dual licensed as above, without any additional terms or conditions.
-
-This software links with a number of libraries, which
-have their own licenses. In particular, it links with the
-[panopticon](https://github.com/das-labor/panopticon) library, which is
-licensed under GPL Version 3.
