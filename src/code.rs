@@ -109,11 +109,9 @@ fn call_x86(code: &Code, cs: &Capstone, insn: &Insn) -> Option<Call> {
                                 let to = u64::from_le_bytes(range.try_into().unwrap());
                                 return Some(Call { from, to });
                             }
-                        } else {
-                            if let Some(range) = code.range(mem, mem + 8) {
-                                let to = u32::from_le_bytes(range.try_into().unwrap()) as u64;
-                                return Some(Call { from, to });
-                            }
+                        } else if let Some(range) = code.range(mem, mem + 8) {
+                            let to = u32::from_le_bytes(range.try_into().unwrap()) as u64;
+                            return Some(Call { from, to });
                         }
                     }
                 }

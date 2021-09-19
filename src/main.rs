@@ -1,22 +1,16 @@
-use addr2line;
 #[macro_use]
 extern crate clap;
 #[macro_use]
 extern crate failure;
-use gimli;
-use home;
-use memmap;
 use object::{self, Object};
 #[macro_use]
 extern crate serde_derive;
-use serde_yaml;
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::io::{self, BufRead};
-use std::iter::FromIterator;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{env, fs, mem};
 
 mod code;
@@ -93,7 +87,8 @@ fn process_file(path: &str, all: bool, terse: bool) -> Result<()> {
 
     let object = object::File::parse(&*map).map_err(|reason| Error::Object { reason })?;
     let symbolizer = Symbolizer::new(&object)?;
-    let disassembler = code::Code::new(&object).ok_or(Error::from("unsupported architecture"))?;
+    let disassembler =
+        code::Code::new(&object).ok_or_else(|| Error::from("unsupported architecture"))?;
     let mut source_lines = SourceLines::default();
 
     let mut config = match fs::File::open("findpanics.yaml") {
@@ -133,8 +128,11 @@ fn process_file(path: &str, all: bool, terse: bool) -> Result<()> {
 
     // Map from address to symbol index.
     // We assume calls are always to the start of a symbol.
-    let symbol_map: HashMap<u64, usize> =
-        HashMap::from_iter(symbols.iter().enumerate().map(|(i, s)| (s.address, i)));
+    let symbol_map: HashMap<u64, usize> = symbols
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.address, i))
+        .collect();
 
     // Build lists of succ/pred.
     for i in 0..symbols.len() {
@@ -208,7 +206,7 @@ fn process_file(path: &str, all: bool, terse: bool) -> Result<()> {
                     frame.file = Some(
                         path.strip_prefix(&cwd)
                             .or_else(|_| path.strip_prefix(&cargo_home))
-                            .unwrap_or(&path)
+                            .unwrap_or(path)
                             .to_string_lossy()
                             .into_owned(),
                     );
@@ -377,22 +375,19 @@ impl Config {
             if let (Some(from), Some(to), Some(file)) =
                 (frame.function.as_ref(), to.as_ref(), frame.file.as_ref())
             {
-                if self
-                    .whitelist
-                    .binary_search_by(|whitelist| {
-                        whitelist
-                            .from
-                            .cmp(&from)
-                            .then_with(|| whitelist.to.as_str().cmp(to))
-                            .then_with(|| whitelist.file.cmp(file))
-                            .then_with(|| whitelist.line.cmp(&frame.line))
-                    })
-                    .is_ok()
-                {
+                let whitelist_find = self.whitelist.binary_search_by(|whitelist| {
+                    whitelist
+                        .from
+                        .cmp(from)
+                        .then_with(|| whitelist.to.as_str().cmp(to))
+                        .then_with(|| whitelist.file.cmp(file))
+                        .then_with(|| whitelist.line.cmp(&frame.line))
+                });
+                if whitelist_find.is_ok() {
                     return true;
                 }
             }
-            to = frame.function.as_ref().map(String::as_str);
+            to = frame.function.as_deref();
         }
         false
     }
@@ -404,21 +399,21 @@ struct SourceLines {
 }
 
 impl SourceLines {
-    fn line(&mut self, path: &PathBuf, mut line: usize) -> Option<&str> {
+    fn line(&mut self, path: &Path, mut line: usize) -> Option<&str> {
         if line == 0 {
             return None;
         }
         line -= 1;
 
         self.map
-            .entry(path.clone())
+            .entry(path.to_path_buf())
             .or_insert_with(|| read_lines(path).unwrap_or_default())
             .get(line)
             .map(|line| line.as_ref())
     }
 }
 
-fn read_lines(path: &PathBuf) -> io::Result<Vec<String>> {
+fn read_lines(path: &Path) -> io::Result<Vec<String>> {
     let f = fs::File::open(path)?;
     let r = io::BufReader::new(f);
     let mut lines = Vec::new();
