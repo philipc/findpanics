@@ -6,7 +6,7 @@ extern crate failure;
 use gimli;
 use home;
 use memmap;
-use object::{self, Object};
+use object::{self, Object, ObjectSymbol, ObjectSymbolTable};
 #[macro_use]
 extern crate serde_derive;
 use serde_yaml;
@@ -28,7 +28,7 @@ enum Error {
     #[fail(display = "Error parsing DWARF: {}", reason)]
     Dwarf { reason: gimli::Error },
     #[fail(display = "Error parsing object file: {}", reason)]
-    Object { reason: &'static str },
+    Object { reason: object::Error },
 }
 
 impl From<String> for Error {
@@ -108,7 +108,6 @@ fn process_file(path: &str, all: bool, terse: bool) -> Result<()> {
     let mut symbols: Vec<Symbol> = symbolizer
         .symbols
         .symbols()
-        .iter()
         .filter_map(|symbol| {
             if symbol.kind() != object::SymbolKind::Text {
                 return None;
@@ -429,13 +428,13 @@ fn read_lines(path: &PathBuf) -> io::Result<Vec<String>> {
 }
 
 struct Symbolizer<'a> {
-    symbols: object::SymbolMap<'a>,
+    symbols: object::SymbolTable<'a, 'a>,
     dwarf: addr2line::ObjectContext,
 }
 
 impl<'a> Symbolizer<'a> {
-    fn new(object: &object::File<'a>) -> Result<Self> {
-        let symbols = object.symbol_map();
+    fn new(object: &'a object::File<'a>) -> Result<Self> {
+        let symbols = object.symbol_table().unwrap();
         let dwarf = addr2line::Context::new(object).map_err(|reason| Error::Dwarf { reason })?;
         Ok(Symbolizer { symbols, dwarf })
     }

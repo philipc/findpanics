@@ -2,8 +2,7 @@ use capstone::arch::x86::X86OperandType;
 use capstone::arch::x86::X86Reg::*;
 use capstone::arch::ArchOperand;
 use capstone::{self, Arch, Capstone, Insn, InsnDetail, InsnGroupType, Mode};
-use object::target_lexicon::Architecture;
-use object::{File, Object, ObjectSegment};
+use object::{Architecture, File, Object, ObjectSegment};
 use std::convert::TryInto;
 
 #[derive(Debug)]
@@ -38,7 +37,7 @@ impl<'code> Code<'code> {
         for segment in file.segments() {
             regions.push(Region {
                 address: segment.address(),
-                code: segment.data(),
+                code: segment.data().unwrap(),
             });
         }
         Some(Code {
@@ -129,5 +128,6 @@ fn call_x86(code: &Code, cs: &Capstone, insn: &Insn) -> Option<Call> {
 fn is_call(detail: &InsnDetail) -> bool {
     detail
         .groups()
+        .into_iter()
         .any(|group| group.0 as u32 == InsnGroupType::CS_GRP_CALL)
 }
